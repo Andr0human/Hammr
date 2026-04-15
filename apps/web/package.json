@@ -1,0 +1,10 @@
+{
+  "name": "@hammr/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hammr dashboard — scaffolded in Session 7.",
+  "scripts": {
+    "dev": "echo 'apps/web is scaffolded in Session 7 (React + Next.js dashboard).'",
+    "build": "echo 'apps/web is scaffolded in Session 7.'"
+  }
+}
