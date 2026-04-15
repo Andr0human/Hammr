@@ -66,8 +66,11 @@ docker compose up -d clickhouse
 npm run migrate:clickhouse
 
 # 4. Verify the HTTP client works end-to-end
-npm run smoke:undici -- https://example.com --n 200 --concurrency 16
+npx tsx apps/node/scripts/undici-smoke.ts https://example.com --n 200 --concurrency 16
 ```
+
+> Call the script via `npx tsx` (not `npm run`) when you need to pass flags.
+> npm's arg forwarding drops `--`-prefixed flags on Windows.
 
 The smoke test should print something like:
 
@@ -115,7 +118,7 @@ All scripts run from the repo root.
 | `npm run dev:node` | Run the node binary under `tsx watch` |
 | `npm run dev:web` | Next.js dashboard dev server |
 | `npm run migrate:clickhouse` | Apply `apps/node/migrations/clickhouse/*.sql` in order |
-| `npm run smoke:undici -- <url>` | HTTP client latency smoke test |
+| `npx tsx apps/node/scripts/undici-smoke.ts <url>` | HTTP client latency smoke test |
 | `npm run lint` | ESLint across `apps/**` and `packages/**` |
 | `npm run format` | Prettier write |
 | `npm run format:check` | Prettier check (CI-friendly) |
