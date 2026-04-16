@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { ClickHouseClient } from '@clickhouse/client';
-import type { GenMsg, RawEvent, Scenario } from '@hammr/shared';
+import type { GenMsg, PerSecondMetric, RawEvent, Scenario } from '@hammr/shared';
 import { logger } from '../logger.js';
 import { LoadEventsWriter } from '../db/events-writer.js';
+import type { TestsDao } from '../db/tests-dao.js';
 import { Aggregator } from './aggregator.js';
 import type { GeneratorPool } from './gen-pool.js';
 import { splitVUs } from './split-vus.js';
@@ -12,21 +13,23 @@ export type TestEndReason = 'completed' | 'failed' | 'aborted';
 
 interface ActiveTest {
   testId: string;
+  name: string;
   scenario: Scenario;
   totalVUs: number;
   rampUpMs: number;
   durationMs: number;
   startedAt: number;
   state: TestState;
-  // Per-generator slice of VUs and a flag set when their `done` arrives.
   perGen: Map<string, { vus: number; done: boolean }>;
   totalEvents: number;
   totalErrors: number;
   droppedEvents: number;
   durationTimer: NodeJS.Timeout;
-  // Cleared on settle so flushTimer doesn't keep firing forever.
   flushTimer: NodeJS.Timeout;
   endError?: string;
+  // Set when the test was aborted via DELETE (not natural duration elapse).
+  // Drives endReason='aborted' even if gens subsequently ack `done` cleanly.
+  manualAbort: boolean;
 }
 
 export interface StartTestParams {
@@ -37,10 +40,12 @@ export interface StartTestParams {
 
 export interface OrchestratorOptions {
   clickhouse?: ClickHouseClient;
-  // Set to false to skip cold-path writes (useful for tests / offline demos).
   writeColdPath?: boolean;
-  // Per-second flush cadence for the hot-path aggregator (logging tick).
   flushIntervalMs?: number;
+  // When provided, the orchestrator persists lifecycle transitions
+  // (running → completed/failed/aborted) to SQLite. Optional so unit tests
+  // can run the orchestrator standalone.
+  testsDao?: TestsDao;
 }
 
 export interface TestResult {
@@ -54,27 +59,37 @@ export interface TestResult {
   error?: string;
 }
 
+// Live events the orchestrator emits. The browser Socket.IO server subscribes
+// to these and fans them out to connected dashboards. Keeping this as a
+// discriminated union (mirrors gen-pool.ts) lets callers do one `on` instead
+// of three separate subscription methods.
+export type OrchestratorEvent =
+  | {
+      type: 'test:started';
+      testId: string;
+      name: string;
+      totalVUs: number;
+      rampUpMs: number;
+      durationMs: number;
+      startedAt: number;
+    }
+  | { type: 'test:metrics'; testId: string; metrics: PerSecondMetric[] }
+  | { type: 'test:settled'; testId: string; result: TestResult };
+
 const FLUSH_INTERVAL = 1000;
 
-// Owns the single active test (v1 invariant: one at a time). Coordinates the
-// generator pool, the in-memory aggregator, and the cold-path writer.
-//
-// Why one orchestrator (not one per test)? Because v1 only ever runs one test;
-// per-test instances would be dead weight. When V2 lifts the invariant we'll
-// keep an orchestrator per testId in a Map, which is a strict superset of this.
 export class Orchestrator {
   private active: ActiveTest | null = null;
   private aggregator: Aggregator | null = null;
   private writer: LoadEventsWriter | null = null;
   private pendingResolve: ((r: TestResult) => void) | null = null;
   private readonly poolUnsub: () => void;
+  private readonly listeners = new Set<(ev: OrchestratorEvent) => void>();
 
   constructor(
     private readonly pool: GeneratorPool,
     private readonly opts: OrchestratorOptions = {},
   ) {
-    // Abort-on-disconnect (CLAUDE.md Session 5 / failure semantics): if any
-    // generator carrying part of the active test drops, fail the whole test.
     this.poolUnsub = pool.on((ev) => {
       if (ev.type !== 'disconnected') return;
       if (!this.active) return;
@@ -83,17 +98,23 @@ export class Orchestrator {
     });
   }
 
-  // True if a test is queued/running/stopping. POST /api/tests must 409 in that case.
   isBusy(): boolean {
-    return this.active !== null && this.active.state !== 'completed' && this.active.state !== 'failed';
+    return (
+      this.active !== null &&
+      this.active.state !== 'completed' &&
+      this.active.state !== 'failed'
+    );
   }
 
   activeTestId(): string | null {
     return this.active?.testId ?? null;
   }
 
-  // Caller awaits the returned Promise to learn how the test ended. Throws
-  // synchronously on validation errors (no gens, busy, bad config).
+  on(listener: (ev: OrchestratorEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
   async startTest(params: StartTestParams): Promise<TestResult> {
     if (this.isBusy()) {
       throw new Error(`controller busy: test ${this.active!.testId} is ${this.active!.state}`);
@@ -119,10 +140,6 @@ export class Orchestrator {
       perGen.set(g.generatorId, { vus, done: false });
     }
 
-    // Duration timer: send `stop` to every gen when the test's wall time elapses.
-    // Generators also enforce durationMs locally (their VU loops check endAt),
-    // so this is belt-and-suspenders — but the protocol message is what the
-    // spec calls out, so we send it.
     const durationTimer = setTimeout(() => {
       logger.info({ testId }, 'duration elapsed; broadcasting stop');
       this.broadcastStop();
@@ -137,6 +154,7 @@ export class Orchestrator {
 
     this.active = {
       testId,
+      name: params.scenario.name,
       scenario: params.scenario,
       totalVUs,
       rampUpMs: params.rampUpMs,
@@ -149,9 +167,27 @@ export class Orchestrator {
       droppedEvents: 0,
       durationTimer,
       flushTimer,
+      manualAbort: false,
     };
 
-    // Send `start` to each generator with its slice of VUs.
+    // Persist the running-state row before dispatching to generators. If the
+    // dispatch loop fails mid-way, fail() will update status to 'failed' so
+    // the DB never observes a lingering 'running' row for a dead test.
+    if (this.opts.testsDao) {
+      try {
+        this.opts.testsDao.insert({
+          id: testId,
+          name: params.scenario.name,
+          status: 'running',
+          config: params.scenario,
+          createdAt: startedAt,
+          startedAt,
+        });
+      } catch (err) {
+        logger.error({ err, testId }, 'failed to persist test row');
+      }
+    }
+
     for (const g of gens) {
       const vus = split.get(g.generatorId) ?? 0;
       try {
@@ -164,9 +200,6 @@ export class Orchestrator {
           durationMs: params.durationMs,
         });
       } catch (err) {
-        // If we can't even reach a gen on send, fail the test immediately —
-        // the abort-on-disconnect listener won't fire because we never made it
-        // far enough for the WS to formally close.
         this.fail(`failed to dispatch start to ${g.generatorId}: ${(err as Error).message}`);
         return new Promise((resolve) => {
           this.pendingResolve = resolve;
@@ -186,26 +219,35 @@ export class Orchestrator {
       'test started',
     );
 
+    this.emit({
+      type: 'test:started',
+      testId,
+      name: params.scenario.name,
+      totalVUs,
+      rampUpMs: params.rampUpMs,
+      durationMs: params.durationMs,
+      startedAt,
+    });
+
     return new Promise<TestResult>((resolve) => {
       this.pendingResolve = resolve;
     });
   }
 
-  // Manually abort a running test (called by DELETE /api/tests/:id in Session 6;
-  // unused via REST in Session 5 but plumbed so the protocol matches the spec).
+  // Called by DELETE /api/tests/:id. Flags manualAbort so settle() picks
+  // endReason='aborted' even when every generator replies `done` cleanly —
+  // the user asked for a stop, so that's the honest reason.
   stop(testId: string): void {
     if (!this.active || this.active.testId !== testId) {
       throw new Error(`test ${testId} is not active`);
     }
     if (this.active.state !== 'running') return;
     this.active.state = 'stopping';
-    logger.info({ testId }, 'stop requested');
+    this.active.manualAbort = true;
+    logger.info({ testId }, 'manual stop requested');
     this.broadcastStop();
   }
 
-  // Called by the WS server for every inbound generator message. Routes to the
-  // active test; messages for stale/unknown tests are ignored (defensive — a
-  // delayed batch from a previous test could land after a new one started).
   handleMessage(generatorId: string, msg: GenMsg): void {
     if (msg.type === 'register' || msg.type === 'pong') return;
     if (!this.active) return;
@@ -233,9 +275,20 @@ export class Orchestrator {
 
   shutdown(): void {
     this.poolUnsub();
+    this.listeners.clear();
     if (this.active) {
       clearTimeout(this.active.durationTimer);
       clearInterval(this.active.flushTimer);
+    }
+  }
+
+  private emit(ev: OrchestratorEvent): void {
+    for (const l of this.listeners) {
+      try {
+        l(ev);
+      } catch (err) {
+        logger.warn({ err }, 'orchestrator listener threw');
+      }
     }
   }
 
@@ -247,7 +300,6 @@ export class Orchestrator {
       if (e.statusCode === 0 || e.statusCode >= 400) this.active.totalErrors++;
     }
     this.aggregator.addBatch(batch);
-    // Cold path: same raw events into ClickHouse via the batched writer.
     this.writer?.push(batch);
     if (dropped > 0) {
       logger.warn({ generatorId, dropped, testId: this.active.testId }, 'generator dropped events');
@@ -280,11 +332,11 @@ export class Orchestrator {
     }
   }
 
-  // Tick on the flush interval: drain closed buckets from the aggregator and
-  // log them. Session 6 swaps the log line for a Socket.IO emit.
   private tick(): void {
     if (!this.active || !this.aggregator) return;
     const closed = this.aggregator.flushClosed();
+    if (closed.length === 0) return;
+    this.emit({ type: 'test:metrics', testId: this.active.testId, metrics: closed });
     for (const m of closed) {
       logger.info(
         {
@@ -305,8 +357,11 @@ export class Orchestrator {
 
   private complete(): void {
     if (!this.active) return;
+    // Manual abort still settles through complete() once gens finish winding
+    // down; we just report 'aborted' instead of 'completed'.
+    const reason: TestEndReason = this.active.manualAbort ? 'aborted' : 'completed';
     this.active.state = 'completed';
-    void this.settle('completed');
+    void this.settle(reason);
   }
 
   private fail(reason: string): void {
@@ -314,40 +369,37 @@ export class Orchestrator {
     this.active.state = 'failed';
     this.active.endError = reason;
     logger.error({ testId: this.active.testId, reason }, 'test failed');
-    // Broadcast stop so any still-running gen winds down (best-effort; the
-    // disconnected gen will already be unreachable, but others may carry on).
     this.broadcastStop();
     void this.settle('failed');
   }
 
-  // Drains the aggregator + writer, computes the final result, and resolves
-  // the Promise returned from startTest(). Idempotent: guards on `pendingResolve`.
   private async settle(reason: TestEndReason): Promise<void> {
     const t = this.active;
     if (!t) return;
     clearTimeout(t.durationTimer);
     clearInterval(t.flushTimer);
 
-    // One last flush of whatever is still in-memory so the final partial second
-    // hits the log even if the test ended mid-bucket.
     if (this.aggregator) {
       const tail = this.aggregator.drainAll();
-      for (const m of tail) {
-        logger.info(
-          {
-            testId: t.testId,
-            second: m.second,
-            step: m.stepName,
-            rps: m.rps,
-            p50: m.p50,
-            p95: m.p95,
-            p99: m.p99,
-            errPct: Number((m.errorRate * 100).toFixed(2)),
-            bytes: m.bytesPerSec,
-            tail: true,
-          },
-          'live metric (tail)',
-        );
+      if (tail.length > 0) {
+        this.emit({ type: 'test:metrics', testId: t.testId, metrics: tail });
+        for (const m of tail) {
+          logger.info(
+            {
+              testId: t.testId,
+              second: m.second,
+              step: m.stepName,
+              rps: m.rps,
+              p50: m.p50,
+              p95: m.p95,
+              p99: m.p99,
+              errPct: Number((m.errorRate * 100).toFixed(2)),
+              bytes: m.bytesPerSec,
+              tail: true,
+            },
+            'live metric (tail)',
+          );
+        }
       }
     }
 
@@ -381,6 +433,30 @@ export class Orchestrator {
       },
       'test settled',
     );
+
+    if (this.opts.testsDao) {
+      // Map endReason → TestStatus. 'completed' stays completed;
+      // 'failed' and 'aborted' each get their own terminal status.
+      const status = reason;
+      try {
+        this.opts.testsDao.finish(
+          t.testId,
+          status,
+          {
+            totalEvents: result.totalEvents,
+            errors: result.errors,
+            droppedEvents: result.droppedEvents,
+            durationMs: result.durationMs,
+          },
+          Date.now(),
+          result.error ?? null,
+        );
+      } catch (err) {
+        logger.error({ err, testId: t.testId }, 'failed to persist terminal state');
+      }
+    }
+
+    this.emit({ type: 'test:settled', testId: t.testId, result });
 
     const resolve = this.pendingResolve;
     this.pendingResolve = null;
