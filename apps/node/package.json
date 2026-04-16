@@ -10,7 +10,9 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "migrate:clickhouse": "node scripts/migrate-clickhouse.mjs",
-    "smoke:undici": "tsx scripts/undici-smoke.ts"
+    "smoke:undici": "tsx scripts/undici-smoke.ts",
+    "gen:demo": "tsx scripts/generator-cli.ts",
+    "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@clickhouse/client": "^1.0.2",
