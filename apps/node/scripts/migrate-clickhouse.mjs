@@ -29,8 +29,22 @@ if (files.length === 0) {
 for (const file of files) {
   const sql = await readFile(join(MIGRATIONS_DIR, file), 'utf8');
   process.stdout.write(`applying ${file}... `);
-  await client.command({ query: sql });
+  for (const stmt of splitStatements(sql)) {
+    await client.command({ query: stmt });
+  }
   console.log('ok');
+}
+
+// ClickHouse HTTP interface runs one statement per request. Strip `--` line
+// comments and split on `;` so migrations can hold DROP + CREATE pairs.
+function splitStatements(sql) {
+  return sql
+    .split('\n')
+    .map((line) => line.replace(/--.*$/, ''))
+    .join('\n')
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 await client.close();
 console.log(`Applied ${files.length} migration(s) to database "${database}".`);
