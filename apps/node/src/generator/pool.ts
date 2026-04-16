@@ -1,17 +1,16 @@
 import { Worker } from 'node:worker_threads';
 import { availableParallelism } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import type { RawEvent } from '@hammr/shared';
+import type { RawEvent, Scenario } from '@hammr/shared';
 import { logger } from '../logger.js';
 import { assignVUsToThreads, validateCapacity } from './ramp.js';
 import type { ParentToThread, ThreadToParent } from './thread.js';
 
 export interface RunTestParams {
-  url: string;
+  scenario: Scenario;
   totalVUs: number;
   rampUpMs: number;
   durationMs: number;
-  thinkTimeMs?: number;
   threadCount?: number;
   maxVUsPerThread?: number;
   generatorId?: string;
@@ -32,7 +31,6 @@ export async function runTest(params: RunTestParams): Promise<RunTestResult> {
   const threadCount = params.threadCount ?? Math.max(1, availableParallelism());
   const maxVUsPerThread = params.maxVUsPerThread ?? DEFAULT_MAX_VUS_PER_THREAD;
   const generatorId = params.generatorId ?? `gen-${randomUUID().slice(0, 8)}`;
-  const thinkTimeMs = params.thinkTimeMs ?? 0;
 
   validateCapacity({ totalVUs: params.totalVUs, threadCount, maxVUsPerThread });
 
@@ -52,7 +50,9 @@ export async function runTest(params: RunTestParams): Promise<RunTestResult> {
       totalVUs: params.totalVUs,
       rampUpMs: params.rampUpMs,
       durationMs: params.durationMs,
-      url: params.url,
+      scenarioName: params.scenario.name,
+      baseUrl: params.scenario.baseUrl,
+      steps: params.scenario.scenario.length,
     },
     'Starting generator pool',
   );
@@ -108,8 +108,7 @@ export async function runTest(params: RunTestParams): Promise<RunTestResult> {
           threadId,
           generatorId,
           vus: bucket,
-          url: params.url,
-          thinkTimeMs,
+          scenario: params.scenario,
           durationMs: params.durationMs,
         };
         worker.postMessage(startMsg);

@@ -1,5 +1,5 @@
 import { parentPort } from 'node:worker_threads';
-import type { RawEvent } from '@hammr/shared';
+import type { RawEvent, Scenario } from '@hammr/shared';
 import { createAgent } from './http.js';
 import { runVU, type EventSink } from './vu.js';
 import type { VUPlan } from './ramp.js';
@@ -10,8 +10,7 @@ export type ParentToThread =
       threadId: number;
       generatorId: string;
       vus: VUPlan[];
-      url: string;
-      thinkTimeMs: number;
+      scenario: Scenario;
       durationMs: number;
       flushIntervalMs?: number;
     }
@@ -64,7 +63,7 @@ port.on('message', (msg: ParentToThread) => {
 });
 
 async function run(cfg: Extract<ParentToThread, { type: 'start' }>): Promise<void> {
-  const { threadId, generatorId, vus, url, thinkTimeMs, durationMs } = cfg;
+  const { threadId, generatorId, vus, scenario, durationMs } = cfg;
   const flushIntervalMs = cfg.flushIntervalMs ?? 1000;
 
   const agent = createAgent(vus.length);
@@ -109,8 +108,7 @@ async function run(cfg: Extract<ParentToThread, { type: 'start' }>): Promise<voi
               vuId: plan.vuId,
               threadId,
               generatorId,
-              url,
-              thinkTimeMs,
+              scenario,
               endAt,
             },
             agent,
