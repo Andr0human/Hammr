@@ -15,6 +15,10 @@ export interface RunTestParams {
   maxVUsPerThread?: number;
   generatorId?: string;
   onMetrics?: (batch: RawEvent[]) => void;
+  // External cancel: when this fires, every worker thread receives {type:'stop'}
+  // and aborts its in-flight VUs. Workers still drain their tail buffers via the
+  // 'done' message, so the parent's totalEvents stays accurate.
+  abortSignal?: AbortSignal;
 }
 
 export interface RunTestResult {
@@ -58,10 +62,12 @@ export async function runTest(params: RunTestParams): Promise<RunTestResult> {
   );
 
   const started = performance.now();
+  const workers: Worker[] = [];
   const workerDone = buckets.map(
     (bucket, threadId) =>
       new Promise<void>((resolve, reject) => {
         const worker = new Worker(workerUrl, workerOpts);
+        workers[threadId] = worker;
 
         worker.on('messageerror', (err) =>
           logger.error({ threadId, err }, 'thread messageerror'),
@@ -115,7 +121,25 @@ export async function runTest(params: RunTestParams): Promise<RunTestResult> {
       }),
   );
 
-  await Promise.all(workerDone);
+  const onAbort = (): void => {
+    for (const w of workers) {
+      try {
+        w.postMessage({ type: 'stop' } satisfies ParentToThread);
+      } catch {
+        // Worker may already be exiting; ignore.
+      }
+    }
+  };
+  if (params.abortSignal) {
+    if (params.abortSignal.aborted) onAbort();
+    else params.abortSignal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  try {
+    await Promise.all(workerDone);
+  } finally {
+    params.abortSignal?.removeEventListener('abort', onAbort);
+  }
   const elapsedMs = Math.round(performance.now() - started);
 
   return { generatorId, totalEvents, errors, durationMs: elapsedMs, events };
