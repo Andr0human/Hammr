@@ -3,6 +3,7 @@ import { availableParallelism } from 'node:os';
 import { WebSocket } from 'ws';
 import type { CtlMsg, GenMsg, RawEvent } from '@hammr/shared';
 import { logger } from '../logger.js';
+import { SelfStats } from '../self-stats.js';
 import { runTest } from './pool.js';
 
 export interface GeneratorClientOptions {
@@ -18,6 +19,10 @@ const DEFAULT_RECONNECT_DELAYS = [500, 1000, 2000, 5000, 10_000];
 // Default upper bound on what we'll claim. The pool itself enforces
 // VU-per-thread caps; this is just what we advertise to the controller.
 const DEFAULT_MAX_VUS_PER_THREAD = 128;
+// Backpressure threshold on the outbound WS. When the kernel/socket hasn't
+// drained this much (in bytes) we drop the newest batch rather than grow
+// unbounded. 8 MB ≈ 50K small events — matches the spec's 50K-or-10MB cap.
+const WS_BUFFERED_DROP_BYTES = 8 * 1024 * 1024;
 
 interface ActiveRun {
   testId: string;
@@ -53,7 +58,19 @@ export function startGeneratorClient(opts: GeneratorClientOptions): GeneratorCli
   let active: ActiveRun | null = null;
   let currentSocket: WebSocket | null = null;
   let stoppedResolve: (() => void) | null = null;
+  let pendingDropped = 0;
   const whenStopped = new Promise<void>((r) => (stoppedResolve = r));
+
+  const stats = new SelfStats({
+    component: `generator:${generatorId}`,
+    // bufferedAmount is the most useful signal for "am I about to drop?"
+    // Read at tick time so the logged value reflects the current socket.
+    extra: () => ({
+      wsBufferedBytes: currentSocket?.bufferedAmount ?? 0,
+      activeTestId: active?.testId ?? null,
+    }),
+  });
+  stats.start();
 
   const send = (msg: GenMsg): void => {
     const ws = currentSocket;
@@ -95,15 +112,45 @@ export function startGeneratorClient(opts: GeneratorClientOptions): GeneratorCli
       generatorId,
       abortSignal: abort.signal,
       onMetrics: (batch: RawEvent[]) => {
-        send({ type: 'metrics', testId: msg.testId, batch });
+        const ws = currentSocket;
+        // Drop-newest when the socket can't keep up. The earliest signal in a
+        // degrading test is the one we want to preserve, so the older events
+        // already in bufferedAmount win. CLAUDE.md spec §Backpressure.
+        if (
+          !ws ||
+          ws.readyState !== WebSocket.OPEN ||
+          ws.bufferedAmount > WS_BUFFERED_DROP_BYTES
+        ) {
+          pendingDropped += batch.length;
+          stats.recordDropped(batch.length);
+          return;
+        }
+        stats.recordEvents(batch.length);
+        const drops = pendingDropped;
+        pendingDropped = 0;
+        send({ type: 'metrics', testId: msg.testId, batch, droppedEvents: drops });
       },
     })
       .then((result) => {
+        // Flush any drops accumulated after the last metrics message so the
+        // controller's running tally still sees them before `done`.
+        if (pendingDropped > 0) {
+          send({
+            type: 'metrics',
+            testId: msg.testId,
+            batch: [],
+            droppedEvents: pendingDropped,
+          });
+          pendingDropped = 0;
+        }
         send({
           type: 'done',
           testId: msg.testId,
           stats: { totalEvents: result.totalEvents, errors: result.errors },
         });
+        // End-of-test snapshot: short tests would never hit the per-minute
+        // timer otherwise. `flush()` logs + resets so next test starts clean.
+        stats.flush();
         logger.info(
           { testId: msg.testId, totalEvents: result.totalEvents, errors: result.errors },
           'test done; sent done',
@@ -197,6 +244,7 @@ export function startGeneratorClient(opts: GeneratorClientOptions): GeneratorCli
         // already logged
       }
     }
+    stats.stop();
     stoppedResolve?.();
   };
 

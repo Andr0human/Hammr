@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import type { ClickHouseClient } from '@clickhouse/client';
 import type { GenMsg, PerSecondMetric, RawEvent, Scenario } from '@hammr/shared';
 import { logger } from '../logger.js';
-import { LoadEventsWriter } from '../db/events-writer.js';
+import { LoadEventsWriter, type WriterStats } from '../db/events-writer.js';
 import type { TestsDao } from '../db/tests-dao.js';
+import type { SelfStats } from '../self-stats.js';
 import { Aggregator } from './aggregator.js';
 import type { GeneratorPool } from './gen-pool.js';
 import { splitVUs } from './split-vus.js';
@@ -46,6 +47,9 @@ export interface OrchestratorOptions {
   // (running → completed/failed/aborted) to SQLite. Optional so unit tests
   // can run the orchestrator standalone.
   testsDao?: TestsDao;
+  // Optional per-process self-instrumentation. When set, every incoming
+  // metrics batch is counted here; start.ts exposes it in its per-minute log.
+  selfStats?: SelfStats;
 }
 
 export interface TestResult {
@@ -301,9 +305,25 @@ export class Orchestrator {
     }
     this.aggregator.addBatch(batch);
     this.writer?.push(batch);
+    this.opts.selfStats?.recordEvents(batch.length);
+    this.opts.selfStats?.recordDropped(dropped);
     if (dropped > 0) {
       logger.warn({ generatorId, dropped, testId: this.active.testId }, 'generator dropped events');
     }
+  }
+
+  // Introspection for the controller's self-stats tick. Cheap reads, no side
+  // effects. Returns null fields when no test is active.
+  introspect(): {
+    activeTestId: string | null;
+    aggregatorBuckets: number;
+    writer: WriterStats | null;
+  } {
+    return {
+      activeTestId: this.active?.testId ?? null,
+      aggregatorBuckets: this.aggregator?.size() ?? 0,
+      writer: this.writer?.stats() ?? null,
+    };
   }
 
   private onDone(generatorId: string, stats: { totalEvents: number; errors: number }): void {
