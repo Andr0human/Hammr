@@ -16,6 +16,7 @@
     "watch-test": "tsx scripts/watch-test.ts",
     "echo-server": "tsx scripts/echo-server.ts",
     "selftest": "tsx scripts/selftest.ts",
+    "sweep": "tsx scripts/sweep-vu-per-thread.ts",
     "test": "tsx --test src/**/*.test.ts"
   },
   "dependencies": {
