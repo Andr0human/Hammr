@@ -12,6 +12,7 @@ import {
 } from '@mui/material';
 import StopIcon from '@mui/icons-material/Stop';
 import CircleIcon from '@mui/icons-material/Circle';
+import DownloadIcon from '@mui/icons-material/Download';
 import type { PerSecondMetric, TestStatus } from '@hammr/shared';
 import { ApiError, api, type TestDetail } from '../../../lib/api';
 import { useLiveTest } from '../../../hooks/useLiveTest';
@@ -119,6 +120,14 @@ export default function ResultsPage({ params }: PageProps) {
             />
           )}
           <Box sx={{ flex: 1 }} />
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => downloadMetricsCsv(testId, metrics)}
+            disabled={metrics.length === 0}
+          >
+            Export CSV
+          </Button>
           {isRunning && (
             <Button color="error" variant="outlined" startIcon={<StopIcon />} onClick={stop} disabled={stopping}>
               {stopping ? 'Stopping…' : 'Stop test'}
@@ -143,6 +152,39 @@ export default function ResultsPage({ params }: PageProps) {
       )}
     </Stack>
   );
+}
+
+const CSV_COLUMNS: (keyof PerSecondMetric)[] = [
+  'second',
+  'stepName',
+  'p50',
+  'p95',
+  'p99',
+  'rps',
+  'errorRate',
+  'bytesPerSec',
+];
+
+function csvEscape(value: unknown): string {
+  const s = value == null ? '' : String(value);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function downloadMetricsCsv(testId: string, metrics: PerSecondMetric[]) {
+  if (metrics.length === 0) return;
+  const lines = [CSV_COLUMNS.join(',')];
+  for (const m of metrics) {
+    lines.push(CSV_COLUMNS.map((c) => csvEscape(m[c])).join(','));
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `hammr-${testId}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function SummaryStrip({

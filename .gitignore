@@ -141,6 +141,7 @@ vite.config.ts.timestamp-*
 # md files
 *.md
 !README.md
+docs/
 
 # Hammr runtime data (SQLite)
 /data/
