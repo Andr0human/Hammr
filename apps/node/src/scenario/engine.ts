@@ -127,6 +127,13 @@ async function runStep(
     }
   }
 
+  // Drop test-teardown aborts: the request never completed, so counting it
+  // as an error produces a misleading 100%-error tail in the last bucket.
+  // NOTE: today the only AbortSignal wired into the request is the run-level
+  // one, so any aborted request is a teardown. If per-request timeouts are
+  // added later, this check must distinguish timeout-aborts from run-aborts.
+  if (signal.aborted) return failed;
+
   const latencyMs = Math.max(0, Math.round(performance.now() - t0));
   sink({
     stepName: step.name,
