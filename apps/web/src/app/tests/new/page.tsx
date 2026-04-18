@@ -1,6 +1,6 @@
 'use client';
-import { useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Alert,
   Box,
@@ -74,9 +74,37 @@ function parseInput(text: string): ParseResult {
 
 export default function NewTestPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const cloneFrom = searchParams.get('cloneFrom');
   const [text, setText] = useState(EXAMPLE);
   const [submitting, setSubmitting] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [cloneNotice, setCloneNotice] = useState<string | null>(null);
+
+  // Clone prefill: fetch the source test's config and replace the textarea.
+  // Runs only once per cloneFrom id — user is free to edit afterward, and
+  // re-navigating with the same id would clobber those edits which is fine.
+  useEffect(() => {
+    if (!cloneFrom) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const d = await api.getTest(cloneFrom);
+        if (cancelled) return;
+        setText(JSON.stringify(d.config, null, 2));
+        setCloneNotice(`Cloned from ${d.name} (${cloneFrom}). Edit any field and run.`);
+      } catch (err) {
+        if (!cancelled) {
+          setCloneNotice(
+            `Could not load source test ${cloneFrom}: ${err instanceof ApiError ? err.message : String(err)}`,
+          );
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cloneFrom]);
 
   // Re-validate on every keystroke. The schema lives in @hammr/shared so this
   // matches the controller's POST /api/tests validation byte-for-byte.
@@ -126,6 +154,7 @@ export default function NewTestPage() {
       <Typography variant="body2" color="text.secondary">
         Paste a scenario JSON. It&rsquo;s validated against the same schema the controller uses, so what passes here will be accepted server-side.
       </Typography>
+      {cloneNotice && <Alert severity="info">{cloneNotice}</Alert>}
 
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 360px' }, gap: 3 }}>
         <Paper variant="outlined" sx={{ p: 2 }}>

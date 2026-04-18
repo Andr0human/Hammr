@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Alert,
   Box,
@@ -13,6 +14,7 @@ import {
 import StopIcon from '@mui/icons-material/Stop';
 import CircleIcon from '@mui/icons-material/Circle';
 import DownloadIcon from '@mui/icons-material/Download';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import type { Finding, PerSecondMetric, TestStatus } from '@hammr/shared';
 import { ApiError, api, type TestDetail } from '../../../lib/api';
 import { useLiveTest } from '../../../hooks/useLiveTest';
@@ -29,6 +31,7 @@ const TERMINAL: TestStatus[] = ['completed', 'failed', 'aborted'];
 
 export default function ResultsPage({ params }: PageProps) {
   const testId = params.id;
+  const router = useRouter();
   const live = useLiveTest(testId);
   const [detail, setDetail] = useState<TestDetail | null>(null);
   const [historical, setHistorical] = useState<PerSecondMetric[] | null>(null);
@@ -130,6 +133,14 @@ export default function ResultsPage({ params }: PageProps) {
             />
           )}
           <Box sx={{ flex: 1 }} />
+          <Button
+            variant="outlined"
+            startIcon={<ContentCopyIcon />}
+            onClick={() => router.push(`/tests/new?cloneFrom=${testId}`)}
+            disabled={!detail}
+          >
+            Clone
+          </Button>
           <Button
             variant="outlined"
             startIcon={<DownloadIcon />}

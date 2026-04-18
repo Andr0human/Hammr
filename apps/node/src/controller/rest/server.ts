@@ -6,6 +6,8 @@ import { logger } from '../../logger.js';
 import { parseScenario } from '../../scenario/parse.js';
 import { queryTestMetrics } from '../../db/metrics-query.js';
 import { analyze } from '../analysis/rules.js';
+import { buildRunSummary, compareRuns } from '../analysis/compare.js';
+import { detectDimension, COMPARE_MIN_RUNS, COMPARE_MAX_RUNS, type Scenario } from '@hammr/shared';
 import type { TestsDao } from '../../db/tests-dao.js';
 import type { GeneratorPool } from '../gen-pool.js';
 import type { Orchestrator } from '../orchestrator.js';
@@ -193,6 +195,83 @@ export async function startRestServer(
       const metrics = await queryTestMetrics(opts.clickhouse, id);
       const findings = analyze(metrics, { rampUpMs });
       res.json({ testId: row.id, findings });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/compare', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!opts.clickhouse) {
+        res.status(503).json({ error: 'clickhouse_unavailable' });
+        return;
+      }
+      const raw = typeof req.query.ids === 'string' ? req.query.ids : '';
+      const ids = raw.split(',').map((s) => s.trim()).filter(Boolean);
+      if (ids.length < COMPARE_MIN_RUNS) {
+        res.status(400).json({ error: 'too_few_runs', min: COMPARE_MIN_RUNS });
+        return;
+      }
+      if (ids.length > COMPARE_MAX_RUNS) {
+        res.status(400).json({ error: 'too_many_runs', max: COMPARE_MAX_RUNS });
+        return;
+      }
+
+      const rows = ids.map((id) => ({ id, row: opts.testsDao.get(id) }));
+      const missing = rows.filter((r) => !r.row).map((r) => r.id);
+      if (missing.length > 0) {
+        res.status(400).json({ error: 'not_found', ids: missing });
+        return;
+      }
+      const incomplete = rows.filter((r) => r.row!.status === 'running' || r.row!.status === 'queued');
+      if (incomplete.length > 0) {
+        res.status(400).json({ error: 'test_not_complete', ids: incomplete.map((r) => r.id) });
+        return;
+      }
+
+      const scenarios = rows.map((r) => r.row!.config as Scenario);
+      const dim = detectDimension(scenarios);
+      if (!dim.ok) {
+        res.status(400).json({ error: dim.reason, differingFields: dim.differingFields });
+        return;
+      }
+
+      // Metrics + per-run summaries run in parallel — each test is an
+      // independent ClickHouse query and an independent analyze() pass.
+      const runs = await Promise.all(
+        rows.map(async (r) => {
+          const scenario = r.row!.config as Scenario;
+          const parsed = parseScenario(scenario);
+          const metrics = await queryTestMetrics(opts.clickhouse!, r.id);
+          const summary = buildRunSummary({
+            testId: r.id,
+            vus: scenario.config.users,
+            targetUrl: scenario.baseUrl,
+            metrics,
+            rampUpMs: parsed.rampUpMs,
+          });
+          return {
+            testId: r.id,
+            name: r.row!.name,
+            config: scenario,
+            metrics,
+            summary,
+          };
+        }),
+      );
+
+      const comparison = compareRuns(runs.map((r) => r.summary), dim.dimension);
+      res.json({
+        dimension: dim.dimension,
+        runs: runs.map((r) => ({
+          testId: r.testId,
+          name: r.name,
+          config: r.config,
+          metrics: r.metrics,
+          summary: r.summary,
+        })),
+        comparison,
+      });
     } catch (err) {
       next(err);
     }

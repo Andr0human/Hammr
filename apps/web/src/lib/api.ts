@@ -44,6 +44,33 @@ export interface AnalysisResponse {
   findings: Finding[];
 }
 
+export type RunShape = 'healthy' | 'spike-recover' | 'monotonic-climb' | 'elevated-plateau';
+
+export interface CompareRunSummary {
+  testId: string;
+  vus: number;
+  targetUrl: string;
+  steadyStateP95: number;
+  steadyStateRps: number;
+  errorRate: number;
+  shape: RunShape;
+  findings: Finding[];
+}
+
+export interface CompareRun {
+  testId: string;
+  name: string;
+  config: Scenario;
+  metrics: PerSecondMetric[];
+  summary: CompareRunSummary;
+}
+
+export interface CompareResponse {
+  dimension: 'vu_count' | 'target_url';
+  runs: CompareRun[];
+  comparison: Finding[];
+}
+
 export interface ValidationIssue {
   path: string;
   message: string;
@@ -98,4 +125,6 @@ export const api = {
     }),
   stopTest: (id: string) =>
     request<{ testId: string; status: string }>(`/api/tests/${id}`, { method: 'DELETE' }),
+  compareTests: (ids: string[]) =>
+    request<CompareResponse>(`/api/compare?ids=${ids.map(encodeURIComponent).join(',')}`),
 };
