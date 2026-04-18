@@ -16,3 +16,12 @@ export interface TestSummary {
   errors: number;
   durationMs: number;
 }
+
+export type FindingSeverity = 'ok' | 'info' | 'warn' | 'critical';
+
+export interface Finding {
+  severity: FindingSeverity;
+  headline: string;
+  detail: string;
+  rule: string;
+}

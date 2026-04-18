@@ -13,11 +13,12 @@ import {
 import StopIcon from '@mui/icons-material/Stop';
 import CircleIcon from '@mui/icons-material/Circle';
 import DownloadIcon from '@mui/icons-material/Download';
-import type { PerSecondMetric, TestStatus } from '@hammr/shared';
+import type { Finding, PerSecondMetric, TestStatus } from '@hammr/shared';
 import { ApiError, api, type TestDetail } from '../../../lib/api';
 import { useLiveTest } from '../../../hooks/useLiveTest';
 import { MetricsCharts } from '../../../components/MetricsCharts';
 import { StepBreakdown } from '../../../components/StepBreakdown';
+import { AnalysisCard } from '../../../components/AnalysisCard';
 import { formatDuration, formatRelative, statusColor } from '../../../lib/format';
 
 interface PageProps {
@@ -31,6 +32,7 @@ export default function ResultsPage({ params }: PageProps) {
   const live = useLiveTest(testId);
   const [detail, setDetail] = useState<TestDetail | null>(null);
   const [historical, setHistorical] = useState<PerSecondMetric[] | null>(null);
+  const [findings, setFindings] = useState<Finding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
 
@@ -45,8 +47,11 @@ export default function ResultsPage({ params }: PageProps) {
         if (cancelled) return;
         setDetail(d);
         if (TERMINAL.includes(d.status)) {
-          const m = await api.getMetrics(testId);
-          if (!cancelled) setHistorical(m.metrics);
+          const [m, a] = await Promise.all([api.getMetrics(testId), api.getAnalysis(testId)]);
+          if (!cancelled) {
+            setHistorical(m.metrics);
+            setFindings(a.findings);
+          }
         }
       } catch (err) {
         if (!cancelled) {
@@ -67,10 +72,15 @@ export default function ResultsPage({ params }: PageProps) {
     let cancelled = false;
     void (async () => {
       try {
-        const [d, m] = await Promise.all([api.getTest(testId), api.getMetrics(testId)]);
+        const [d, m, a] = await Promise.all([
+          api.getTest(testId),
+          api.getMetrics(testId),
+          api.getAnalysis(testId),
+        ]);
         if (cancelled) return;
         setDetail(d);
         setHistorical(m.metrics);
+        setFindings(a.findings);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof ApiError ? `${err.message} (HTTP ${err.status})` : String(err));
@@ -146,6 +156,9 @@ export default function ResultsPage({ params }: PageProps) {
         </Paper>
       ) : (
         <>
+          {showHistorical && (
+            <AnalysisCard findings={findings} loading={findings === null} />
+          )}
           <MetricsCharts metrics={metrics} baseSecond={baseSecond} />
           <StepBreakdown metrics={metrics} />
         </>

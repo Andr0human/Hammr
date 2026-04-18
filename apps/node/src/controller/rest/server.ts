@@ -5,6 +5,7 @@ import { ZodError } from 'zod';
 import { logger } from '../../logger.js';
 import { parseScenario } from '../../scenario/parse.js';
 import { queryTestMetrics } from '../../db/metrics-query.js';
+import { analyze } from '../analysis/rules.js';
 import type { TestsDao } from '../../db/tests-dao.js';
 import type { GeneratorPool } from '../gen-pool.js';
 import type { Orchestrator } from '../orchestrator.js';
@@ -160,6 +161,38 @@ export async function startRestServer(
       }
       const metrics = await queryTestMetrics(opts.clickhouse, id);
       res.json({ testId: row.id, status: row.status, metrics });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/api/tests/:id/analysis', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!opts.clickhouse) {
+        res.status(503).json({ error: 'clickhouse_unavailable' });
+        return;
+      }
+      const id = req.params.id ?? '';
+      const row = opts.testsDao.get(id);
+      if (!row) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (row.status === 'running' || row.status === 'queued') {
+        res.status(409).json({ error: 'test_not_complete', status: row.status });
+        return;
+      }
+      let rampUpMs = 0;
+      try {
+        const parsed = parseScenario(row.config);
+        rampUpMs = parsed.rampUpMs;
+      } catch {
+        // Config in SQLite was already validated at create time; if it fails to
+        // re-parse, treat ramp as 0 rather than failing the whole analysis.
+      }
+      const metrics = await queryTestMetrics(opts.clickhouse, id);
+      const findings = analyze(metrics, { rampUpMs });
+      res.json({ testId: row.id, findings });
     } catch (err) {
       next(err);
     }

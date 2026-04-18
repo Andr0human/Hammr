@@ -2,7 +2,7 @@
 // /api/* to the controller via next.config.mjs rewrites, so paths are
 // origin-relative everywhere. In prod the same origin fronts both.
 
-import type { PerSecondMetric, Scenario, TestStatus, TestSummary } from '@hammr/shared';
+import type { Finding, PerSecondMetric, Scenario, TestStatus, TestSummary } from '@hammr/shared';
 
 export interface TestListItem {
   id: string;
@@ -37,6 +37,11 @@ export interface MetricsResponse {
   testId: string;
   status: TestStatus;
   metrics: PerSecondMetric[];
+}
+
+export interface AnalysisResponse {
+  testId: string;
+  findings: Finding[];
 }
 
 export interface ValidationIssue {
@@ -85,6 +90,7 @@ export const api = {
     request<ListResponse>(`/api/tests?limit=${limit}&offset=${offset}`),
   getTest: (id: string) => request<TestDetail>(`/api/tests/${id}`),
   getMetrics: (id: string) => request<MetricsResponse>(`/api/tests/${id}/metrics`),
+  getAnalysis: (id: string) => request<AnalysisResponse>(`/api/tests/${id}/analysis`),
   createTest: (scenario: Scenario) =>
     request<{ testId: string; status: string }>('/api/tests', {
       method: 'POST',
