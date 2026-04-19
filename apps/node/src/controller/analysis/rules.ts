@@ -1,9 +1,11 @@
 import type { Finding, PerSecondMetric } from '@hammr/shared';
 
-// Shutdown-tail trim: the last 1–2s of any run are artifact (VUs being torn
-// down mid-iteration spike error rate and latency). Every rule looks at
-// post-trim data only. See docs/gotchas.md.
-const SHUTDOWN_TAIL_SECONDS = 2;
+// Shutdown-tail trim: the final 1s of any run has depressed rps because only
+// naturally-completed requests count (teardown-aborted requests are dropped
+// at the engine — see engine.ts + docs/gotchas.md). The error/latency spike
+// artifact no longer exists; we still trim 1s so the rps dip doesn't nudge
+// saturation's "rps flat" gate on borderline runs.
+const SHUTDOWN_TAIL_SECONDS = 1;
 
 // Error-rate thresholds for the error-spike rule.
 const ERROR_WARN = 0.01;

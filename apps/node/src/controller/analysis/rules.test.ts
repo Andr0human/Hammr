@@ -17,10 +17,10 @@ function m(over: Partial<PerSecondMetric>): PerSecondMetric {
   };
 }
 
-// Build a healthy baseline run with `n` steady-state seconds + 2 tail seconds.
+// Build a healthy baseline run with `n` steady-state seconds + 1 tail second.
 function healthyRun(n: number, opts: Partial<PerSecondMetric> = {}): PerSecondMetric[] {
   const out: PerSecondMetric[] = [];
-  for (let i = 0; i < n + 2; i++) out.push(m({ second: i, ...opts }));
+  for (let i = 0; i < n + 1; i++) out.push(m({ second: i, ...opts }));
   return out;
 }
 
@@ -38,7 +38,6 @@ test('saturation rule fires on flat RPS with rising p95', () => {
   }
   // shutdown tail
   metrics.push(m({ second: 20, p95: 5000, rps: 5 }));
-  metrics.push(m({ second: 21, p95: 5000, rps: 5 }));
 
   const findings = analyze(metrics, { rampUpMs: 0 });
   assert.ok(findings.some((f) => f.rule === 'saturation' && f.severity === 'warn'));
@@ -66,9 +65,8 @@ test('error-spike warn fires for >1% and critical for >5%', () => {
 
 test('error spikes in the shutdown tail are ignored', () => {
   const metrics: PerSecondMetric[] = healthyRun(10);
-  // Overwrite the last two (tail) seconds with spiky data.
-  metrics[metrics.length - 1] = m({ second: 11, errorRate: 0.5 });
-  metrics[metrics.length - 2] = m({ second: 10, errorRate: 0.5 });
+  // Overwrite the last (tail) second with spiky data.
+  metrics[metrics.length - 1] = m({ second: 10, errorRate: 0.5 });
   const findings = analyze(metrics, { rampUpMs: 0 });
   assert.ok(!findings.some((f) => f.rule === 'error_spike'));
 });
@@ -96,7 +94,6 @@ test('saturation rule ignores a transient 1–2s late spike', () => {
   for (let i = 0; i < p95s.length; i++) metrics.push(m({ second: i, p95: p95s[i]!, rps: 28 }));
   // tail
   metrics.push(m({ second: p95s.length, p95: 819, rps: 24 }));
-  metrics.push(m({ second: p95s.length + 1, p95: 831, rps: 32 }));
   const findings = analyze(metrics, { rampUpMs: 0 });
   assert.ok(!findings.some((f) => f.rule === 'saturation'), 'saturation must not fire on transient tail');
 });
@@ -118,7 +115,6 @@ test('latency-elevation fires when steady plateau sits well above opening', () =
   }
   // tail
   metrics.push(m({ second: 100, p95: 2804, rps: 43 }));
-  metrics.push(m({ second: 101, p95: 2306, rps: 31 }));
 
   const findings = analyze(metrics, { rampUpMs: 5000 });
   const hit = findings.find((f) => f.rule === 'latency_elevation');
@@ -138,7 +134,6 @@ test('jitter rule fires on bimodal p95 with no trend (Opslyft shape)', () => {
     metrics.push(m({ second: 2 + i, p95: p95s[i]!, rps: 8 }));
   }
   metrics.push(m({ second: 100, p95: 1230, rps: 4 }));
-  metrics.push(m({ second: 101, p95: 1250, rps: 17 }));
   const findings = analyze(metrics, { rampUpMs: 0 });
   assert.ok(findings.some((f) => f.rule === 'jitter' && f.severity === 'warn'));
   assert.ok(!findings.some((f) => f.rule === 'healthy_fallback'));
@@ -155,7 +150,6 @@ test('ramp-up window is excluded from steady-state rules', () => {
   for (let i = 0; i < 5; i++) metrics.push(m({ second: i, p95: 500 + i * 100, rps: 10 + i * 10 }));
   for (let i = 5; i < 25; i++) metrics.push(m({ second: i, p95: 60, rps: 50 }));
   metrics.push(m({ second: 25, p95: 5000, rps: 5 }));
-  metrics.push(m({ second: 26, p95: 5000, rps: 5 }));
   const findings = analyze(metrics, { rampUpMs: 5000 });
   assert.ok(!findings.some((f) => f.rule === 'saturation'));
 });
