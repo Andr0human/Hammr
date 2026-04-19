@@ -20,6 +20,10 @@ export interface RunSummary {
 const SCALING_FLOOR = 0.7;
 // Latency blowup: 2× latency for ≤ 2× load is the knee signal.
 const BLOWUP_RATIO = 2;
+// Error escalation thresholds — mirror Phase 1 error_spike levels so
+// single-run and cross-run views agree on what "bad" means.
+const ERROR_WARN = 0.01;
+const ERROR_CRITICAL = 0.05;
 // URL-comparison thresholds (same load, same scenario — differences are
 // attributable to the target itself).
 const URL_LATENCY_RATIO = 2;
@@ -101,7 +105,8 @@ function analyzeVuSweep(runs: RunSummary[]): Finding[] {
         if (!worstBlow || pRatio > worstBlow.ratio) worstBlow = { a, b, ratio: pRatio };
       }
     }
-    if (kneeIdx === null && (eff < SCALING_FLOOR || (a.steadyStateP95 > 0 && b.steadyStateP95 / a.steadyStateP95 > BLOWUP_RATIO))) {
+    const errorCrossed = a.errorRate < ERROR_WARN && b.errorRate >= ERROR_WARN;
+    if (kneeIdx === null && (eff < SCALING_FLOOR || (a.steadyStateP95 > 0 && b.steadyStateP95 / a.steadyStateP95 > BLOWUP_RATIO) || errorCrossed)) {
       kneeIdx = i;
     }
   }
@@ -123,6 +128,25 @@ function analyzeVuSweep(runs: RunSummary[]): Finding[] {
       rule: 'latency_blowup',
       headline: `p95 grew ${ratio.toFixed(1)}× when load grew ${(b.vus / a.vus).toFixed(1)}×.`,
       detail: `${a.vus} VU → p95 ~${Math.round(a.steadyStateP95)}ms; ${b.vus} VU → p95 ~${Math.round(b.steadyStateP95)}ms.`,
+    });
+  }
+
+  let worstErr: RunSummary | null = null;
+  for (const r of runs) {
+    if (!worstErr || r.errorRate > worstErr.errorRate) worstErr = r;
+  }
+  if (worstErr && worstErr.errorRate >= ERROR_WARN) {
+    const severity: Finding['severity'] = worstErr.errorRate >= ERROR_CRITICAL ? 'critical' : 'warn';
+    const idx = runs.indexOf(worstErr);
+    const prev = idx > 0 ? runs[idx - 1]! : null;
+    const detail = prev
+      ? `${worstErr.vus} VU → ${(worstErr.errorRate * 100).toFixed(2)}% error; previous rung ${prev.vus} VU → ${(prev.errorRate * 100).toFixed(2)}%.`
+      : `${worstErr.vus} VU → ${(worstErr.errorRate * 100).toFixed(2)}% error.`;
+    out.push({
+      severity,
+      rule: 'error_escalation',
+      headline: `Error rate reached ${(worstErr.errorRate * 100).toFixed(2)}% at ${worstErr.vus} VUs.`,
+      detail,
     });
   }
 

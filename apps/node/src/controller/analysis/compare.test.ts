@@ -115,6 +115,31 @@ test('VU sweep: latency blowup fires when p95 doubles under <=2x load', () => {
   assert.ok(findings.some((f) => f.rule === 'scaling_efficiency'));
 });
 
+test('VU sweep: error_escalation fires critical when a rung exceeds 5% error', () => {
+  const runs = [
+    summary({ testId: 'a', vus: 50, steadyStateP95: 500, steadyStateRps: 50, errorRate: 0 }),
+    summary({ testId: 'b', vus: 200, steadyStateP95: 600, steadyStateRps: 100, errorRate: 0.08 }),
+  ];
+  const findings = compareRuns(runs, 'vu_count');
+  const err = findings.find((f) => f.rule === 'error_escalation');
+  assert.ok(err);
+  assert.equal(err!.severity, 'critical');
+});
+
+test('VU sweep: error_escalation fires warn at 1-5% and stays silent below 1%', () => {
+  const warnRuns = [
+    summary({ testId: 'a', vus: 50, errorRate: 0 }),
+    summary({ testId: 'b', vus: 100, errorRate: 0.02 }),
+  ];
+  assert.ok(compareRuns(warnRuns, 'vu_count').find((f) => f.rule === 'error_escalation' && f.severity === 'warn'));
+
+  const silentRuns = [
+    summary({ testId: 'a', vus: 50, errorRate: 0 }),
+    summary({ testId: 'b', vus: 100, errorRate: 0.005 }),
+  ];
+  assert.equal(compareRuns(silentRuns, 'vu_count').find((f) => f.rule === 'error_escalation'), undefined);
+});
+
 test('VU sweep: healthy finding when all rungs scale cleanly', () => {
   const runs = [
     summary({ testId: 'a', vus: 10, steadyStateP95: 100, steadyStateRps: 10 }),

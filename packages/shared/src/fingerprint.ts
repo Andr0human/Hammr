@@ -18,15 +18,14 @@ export const COMPARE_MIN_RUNS = 2;
 export const COMPARE_MAX_RUNS = 10;
 
 // The six fields we fingerprint on. Step order is meaningful so the whole
-// `scenario` array is compared as one unit. `name` is included because
-// renaming implies a different experiment (it's also the only user-facing
-// label — two tests with different names shouldn't silently collapse).
-const FIELDS = ['name', 'baseUrl', 'config.users', 'config.rampUp', 'config.duration', 'config.thinkTime', 'scenario'] as const;
+// `scenario` array is compared as one unit. `name` is intentionally excluded:
+// it's a user label, and `baseUrl` + `scenario` are the real semantic guards
+// against comparing unrelated experiments.
+const FIELDS = ['baseUrl', 'config.users', 'config.rampUp', 'config.duration', 'config.thinkTime', 'scenario'] as const;
 type Field = (typeof FIELDS)[number];
 
 function getField(s: Scenario, f: Field): unknown {
   switch (f) {
-    case 'name': return s.name;
     case 'baseUrl': return s.baseUrl;
     case 'config.users': return s.config.users;
     case 'config.rampUp': return s.config.rampUp;
