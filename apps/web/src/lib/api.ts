@@ -51,6 +51,7 @@ export interface CompareRunSummary {
   vus: number;
   targetUrl: string;
   steadyStateP95: number;
+  steadyStateP99: number;
   steadyStateRps: number;
   errorRate: number;
   shape: RunShape;

@@ -1,5 +1,7 @@
 # Hammr
 
+> **Looking for the Go-generator variant?** A fork with the load-driving runtime rewritten in idiomatic Go (goroutine-per-VU, `runtime/metrics` self-instrumentation) lives at [Andr0human/Hammr_Go](https://github.com/Andr0human/Hammr_Go). Same controller/dashboard/ClickHouse stack, same WebSocket protocol — just a Go generator instead of Node Worker Threads.
+
 A distributed HTTP load testing platform. Simulates thousands of concurrent users against any HTTP API, streams real-time metrics to a live dashboard, and stores per-request events in ClickHouse for historical analysis.
 
 ## What it does
